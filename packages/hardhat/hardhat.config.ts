@@ -45,6 +45,12 @@ const config: HardhatUserConfig = {
       // By default, it will take the first Hardhat account as the deployer
       default: 0,
     },
+    manager: {
+      default: 1, // Второй аккаунт будет manager
+    },
+    feeCollector: {
+      default: 2, // Третий аккаунт будет feeCollector
+    },
   },
   networks: {
     // View the networks that are pre-configured.

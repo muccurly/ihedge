@@ -1,44 +1,96 @@
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { DeployFunction } from "hardhat-deploy/types";
-import { Contract } from "ethers";
+import { ethers } from "hardhat";
 
-/**
- * Deploys a contract named "YourContract" using the deployer account and
- * constructor arguments set to the deployer address
- *
- * @param hre HardhatRuntimeEnvironment object.
- */
-const deployYourContract: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
-  /*
-    On localhost, the deployer account is the one that comes with Hardhat, which is already funded.
-
-    When deploying to live networks (e.g `yarn deploy --network sepolia`), the deployer account
-    should have sufficient balance to pay for the gas fees for contract creation.
-
-    You can generate a random account with `yarn generate` or `yarn account:import` to import your
-    existing PK which will fill DEPLOYER_PRIVATE_KEY_ENCRYPTED in the .env file (then used on hardhat.config.ts)
-    You can run the `yarn account` command to check your balance in every network.
-  */
-  const { deployer } = await hre.getNamedAccounts();
+const deployHedgeFundVaultWithMocks: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
+  const { deployer, manager, feeCollector } = await hre.getNamedAccounts();
   const { deploy } = hre.deployments;
+  // 1. Deploy Mock Tokens if on local or test network
+  let usdtAddress: string;
+  let fundTokenAddress: string;
 
-  await deploy("YourContract", {
+
+    console.log("Deploying mock tokens for test network...");
+    
+    // Deploy Mock USDT (6 decimals)
+    const mockUSDT = await deploy("MockUSDT", {
+      from: deployer,
+      args: ["Mock USDT", "USDT", 1],
+      log: true,
+      autoMine: true,
+    });
+    usdtAddress = mockUSDT.address;
+
+    // Deploy Mock FundToken (18 decimals)
+    const mockFundToken = await deploy("MockERC20", {
+      from: deployer,
+      args: ["Fund Token", "FUND", 1],
+      log: true,
+      autoMine: true,
+    });
+    fundTokenAddress = mockFundToken.address;
+
+    console.log("✅ Mock tokens deployed:");
+    console.log("MockUSDT:", usdtAddress);
+    console.log("MockFundToken:", fundTokenAddress);
+
+  // 2. Deploy HedgeFundVault with configuration
+  const config = {
+    managerAddress: manager || deployer, // Fallback to deployer if manager not set
+    feeCollectorAddress: feeCollector || deployer, // Fallback to deployer if feeCollector not set
+    initialTokenPrice: ethers.parseUnits("1.00", 1), // 1.00 USDT per 1e18 LP tokens
+    managementFeeBps: 100, // 1% annual management fee
+    performanceFeeBps: 2000, // 20% performance fee
+    minDeposit: ethers.parseUnits("100", 1), // 1000 USDT minimum
+    maxSingleDeposit: ethers.parseUnits("500000", 1), // 500k USDT maximum
+    withdrawalDelay: 86400, // 1 day in seconds
+  };
+
+  console.log("Deploying HedgeFundVault with configuration:");
+  console.log("USDT Address:", usdtAddress);
+  console.log("FundToken Address:", fundTokenAddress);
+  console.log("Manager:", config.managerAddress);
+  // console.log("Manager:", deployer);
+  console.log("Fee Collector:", config.feeCollectorAddress);
+
+  const vault = await deploy("HedgeFundVault", {
     from: deployer,
-    // Contract constructor arguments
-    args: [deployer],
+    args: [
+      usdtAddress,
+      fundTokenAddress,
+      config.managerAddress,
+      config.feeCollectorAddress,
+      config.initialTokenPrice,
+    ],
     log: true,
-    // autoMine: can be passed to the deploy function to make the deployment process faster on local networks by
-    // automatically mining the contract deployment transaction. There is no effect on live networks.
     autoMine: true,
   });
 
-  // Get the deployed contract to interact with it after deploying.
-  const yourContract = await hre.ethers.getContract<Contract>("YourContract", deployer);
-  console.log("👋 Initial greeting:", await yourContract.greeting());
+  // 3. Initialize vault settings
+  const vaultContract = await hre.ethers.getContractAt("HedgeFundVault", vault.address);
+  
+  console.log("Configuring vault settings...");
+  await (await vaultContract.setFees(config.managementFeeBps, config.performanceFeeBps)).wait();
+  await (await vaultContract.setDepositLimits(config.minDeposit, config.maxSingleDeposit)).wait();
+  
+  // For test networks, mint some initial USDT to deployer for testing
+  if (hre.network.tags.test || hre.network.tags.local) {
+    const mockUSDT = await hre.ethers.getContractAt("MockUSDT", usdtAddress);
+    const mintAmount = ethers.parseUnits("1000000", 1); // 1M USDT
+    console.log(`Minting ${ethers.formatUnits(mintAmount, 1)} USDT to deployer for testing...`);
+    await (await mockUSDT.mint(deployer, mintAmount)).wait();
+  }
+
+  console.log("✅ HedgeFundVault deployment complete!");
+  console.log("Vault Address:", vault.address);
+  console.log("Initial Setup:");
+  console.log("- Token Price:", await vaultContract.tokenPrice());
+  // console.log("- Management Fee:", (await vaultContract.managementFeeBps()) / 100, "%");
+  // console.log("- Performance Fee:", (await vaultContract.performanceFeeBps()) / 100, "%");
+  console.log("- Min Deposit:", ethers.formatUnits(await vaultContract.minDeposit(), 6), "USDT");
+  console.log("- Max Deposit:", ethers.formatUnits(await vaultContract.maxSingleDeposit(), 6), "USDT");
 };
 
-export default deployYourContract;
+export default deployHedgeFundVaultWithMocks;
 
-// Tags are useful if you have multiple deploy files and only want to run one of them.
-// e.g. yarn deploy --tags YourContract
-deployYourContract.tags = ["YourContract"];
+deployHedgeFundVaultWithMocks.tags = ["HedgeFundVault", "Mocks"];
